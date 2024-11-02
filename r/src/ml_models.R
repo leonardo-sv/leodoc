@@ -1,3 +1,293 @@
+library(sits)
+library(caret)
+
+predict_label <- function(model, predicted){
+  labels <- levels(model$cluster_label$labels)
+  predictions <- matrix(0L, 
+                        length(predicted),
+                        length(model$cluster_label$labels))
+  colnames(predictions) <- labels
+  
+  
+  
+  for (c in model$cluster_label$cluster){
+    clabel <- filter(model$cluster_label, cluster == c)
+    predictions[, clabel$labels] <- as.numeric(clabel$cluster == predicted)
+    
+  }
+  return(predictions)
+  
+}
+
+predict_clabel <- function(model, predicted){
+  for (c in model$cluster_label$cluster){
+    clabel <- dplyr::filter(model$cluster_label, cluster == c)
+    predicted[predicted==clabel$cluster]<-as.character(clabel$labels)
+    
+  }
+  return(factor(predicted,levels = sort(unique(samples$label))))
+  
+}
+
+hcdtw <- function(samples = NULL, ...){
+  sits:::.check_set_caller("hcdtw")
+  train_fun <- function(samples) {
+    # does not support working with DEM or other base data
+    if (inherits(samples, "sits_base"))
+      stop(sits:::.conf("messages", "sits_train_base_data"), call. = FALSE)
+    
+    n_clusters <- length(unique(samples$label))
+    
+    labels <- sort(unique(samples[["label"]]), na.last = TRUE)
+    model <- dtwclust::tsclust(
+      series = sits::sits_values(samples, format = "cases_dates_bands"),
+      type = "hierarchical",
+      k = n_clusters,
+      distance = "dtw_basic",
+      control = dtwclust::hierarchical_control(method = "ward.D2"),
+      seed = 76L
+    )
+    model$bands <- sits::sits_bands(samples)
+    predicted <- dtwclust::predict(model, 
+                                   sits::sits_values(
+                                     samples, 
+                                     format = "cases_dates_bands"))
+    model$cluster_label<-define_label_cluster(predicted, factor(samples$label))
+    predict_fun <- function(values) {
+      # Verifies if dtwclust package is installed
+      sits:::.check_require_packages("dtwclust")
+      # Used to check values (below)
+      input_pixels <- nrow(values)
+      # Do classification
+      values <- stats::predict(
+        object = model, 
+        newdata = sits::sits_values(values, format = "cases_dates_bands")
+      )
+      
+      values <- predict_clabel(model, values)
+      
+      # Are the results consistent with the data input?
+      # sits:::.check_processed_values(values, input_pixels)
+      # Reorder matrix columns if needed
+      
+      
+      # if (any(labels != colnames(values))) {
+      #   values <- values[, labels]
+      # }
+      return(values)
+    }
+    
+    # Set model class
+    
+    predict_fun <- sits:::.set_class(
+      predict_fun,"hcdtw", "sits_model", class(predict_fun)
+    )
+    
+    return(predict_fun)
+  }
+  
+  # if no data is given, we prepare a
+  # function to be called as a parameter of other functions
+  if (!sits:::.has(samples)) {
+    result <- train_fun
+  } else {
+    # ...otherwise compute the result on the input data
+    result <- train_fun(samples)
+  }
+  return(result)
+  
+}
+
+models_predict <- function(model, samples){
+  predicted <- NULL
+  if ("rfor_model" %in% class(model)) {
+    predicted_tibble <- sits::sits_classify(
+      data = samples, 
+      ml_model = model,
+      progress = FALSE)
+    predicted <- factor(unlist(
+                    lapply(
+                      predicted_tibble$predicted,
+                      function(x) x$class)), sort(unique(samples$label)))
+  } else if ("hcdtw" %in% class(model)) {
+    predicted <- model(samples)
+  }
+  
+  return(predicted)
+}
+
+rf <- function(samples=NULL){
+  model <- sits::sits_rfor(samples)
+  return(model)
+}
+
+all_combinations <- function(set_values){
+  return(
+    do.call(
+      "c",
+      lapply(
+        seq_along(set_values),
+        function(i) combn(set_values, i, FUN = list)
+      )
+    )
+  )
+  
+}
+
+clustering_metrics <- function(model, ground_truth){
+  model <- environment(model)[["model"]]
+  suppressMessages(
+    vi_evaluators <- dtwclust::cvi_evaluators("valid",
+                                              ground.truth = ground_truth))
+  score_fun <- vi_evaluators$score
+  metrics <- score_fun(list(model))
+  metrics = data.frame(metrics)
+  metrics$bands <- paste(model$bands, collapse = "-")
+  return(metrics[,c("bands", "RI", "ARI", "J", "FM", "Sil", "D","CH")])
+  
+}
+
+classification_metrics <- function(model, predicted, ground_truth){
+  bands <- sits::sits_bands(model)
+  bands <- paste(bands, collapse = "-")
+  cm <- confusionMatrix(predicted, ground_truth)
+  if(length(unique(ground_truth)) > 2){
+    ACC <- cm$overall["Accuracy"][[1]]
+    BACC <- mean(cm$byClass[,"Balanced Accuracy"])
+    PREC <- if (is.na(mean(cm$byClass[,"Precision"]))) 0 else mean(cm$byClass[,"Precision"])
+    RECL <- mean(cm$byClass[,"Recall"])
+    SENS <- mean(cm$byClass[,"Sensitivity"])
+    F1 <- if (is.na(mean(cm$byClass[,"F1"]))) 0 else mean(cm$byClass[,"F1"]) 
+    SPEC <- mean(cm$byClass[,"Specificity"])
+  }
+  else{
+    
+    ACC <- cm$overall["Accuracy"][[1]]
+    BACC <- cm$byClass["Balanced Accuracy"][[1]]
+    PREC <- cm$byClass["Precision"][[1]]
+    RECL <- cm$byClass["Recall"][[1]]
+    SENS <- cm$byClass["Sensitivity"][[1]]
+    F1 <- cm$byClass["F1"][[1]]
+    SPEC <- cm$byClass["Specificity"][[1]]
+  }
+  metrics <- data.frame(bands,ACC,BACC,PREC,RECL,SENS,F1,SPEC)
+  return(metrics)
+}
+
+empty_metric_df <- function(type){
+  
+  if(type == "supervised"){
+    df <- data.frame(
+            bands=character(),
+            ACC=double(),
+            BACC=double(),
+            PREC=double(),
+            RECL=double(),
+            SENS=double(),
+            F1=double(),
+            SPEC=double())
+  }
+  else if (type == "unsupervised"){
+    df <- data.frame(
+      bands=character(),
+      RI =double(),
+      ARI=double(),
+      J=double(),
+      FM=double(),
+      Sil=double(),
+      D=double(),
+      CH=double(),
+      ACC=double(), 
+      BACC=double(),
+      PREC=double(),
+      RECL=double(),
+      SENS=double(),
+      F1=double(),
+      SPEC=double())
+  }
+  else {
+    df <- NULL
+  }
+  return(df)
+}
+
+apply_metrics <- function(model, ground_truth, pground_truth, predicted){
+  if ("rfor_model" %in% class(model)) {
+    metrics <- classification_metrics(model, predicted, pground_truth)
+    
+  }
+  else if ("hcdtw" %in% class(model)) {
+    clus_metrics <- clustering_metrics(model, ground_truth)
+    clas_metrics <- classification_metrics(model, predicted, pground_truth)
+    metrics <- cbind(clus_metrics, clas_metrics[,-1])
+  }
+  return(metrics)
+}
+
+kfold_model <- function(algorithm, samples, folds){
+  
+  if (algorithm == "hcdtw") metrics <- empty_metric_df("unsupervised") 
+  else metrics <- empty_metric_df("supervised")
+
+  
+  for (k in 1:max(folds)) {
+    if (algorithm == "hcdtw") model <- hcdtw() else model <- rf()
+  
+    train <- dplyr::filter(samples, folds!=k)
+    test <- dplyr::filter(samples, folds==k)
+    
+    gt_test <- factor(test$label, levels = sort(unique(train$label)))
+    gt_train <- factor(train$label, levels = sort(unique(train$label)))
+    model<-sits::sits_train(train, model)
+    
+    predict_test <- models_predict(model, test)
+    
+    metrics_k <- apply_metrics(model, gt_train, gt_test, predict_test)
+
+    metrics <- rbind(metrics, metrics_k)
+    
+  }
+  
+  return(
+    metrics %>%
+      dplyr::group_by(bands) %>%
+        dplyr::summarise(across(dplyr::everything(), mean)))
+  
+}
+
+
+model_by_combination_bands <- function(model, samples, bands, r){
+  
+  combns_hcluster <- list()
+  
+  combinations <- combn(bands,r)
+  
+  for(c in 1:length(combinations[1,])){
+    comb_bands <- combinations[,c]
+    print(comb_bands)
+    values <- sits_values(samples, comb_bands, format = "cases_dates_bands")
+    
+    
+    dendro <- dtwclust::tsclust(
+      series = values,
+      type = "hierarchical",
+      k = max(nrow(values)-1, 3),
+      distance = "dtw_basic",
+      control = dtwclust::hierarchical_control(method = "ward.D2")
+      
+    )
+    dendro$bands <- comb_bands
+    ground_truth <- factor(samples$label)
+    predicted <- dtwclust::predict(dendro, values)
+    dendro$cluster_label <- define_label_cluster(predicted, ground_truth)
+    
+    combns_hcluster <- append(combns_hcluster,list(dendro))
+    
+  }
+  return(combns_hcluster)
+}
+
+
 
 
 
@@ -83,10 +373,10 @@ define_label_cluster <- function(predicted, ground_truth){
                     cluster = predicted
   )
   
-  cluster_label <- df %>% group_by(cluster, labels) %>% 
-    summarise(total_count=n(),.groups = "drop_last") %>%
-    mutate(freq_by_cluster = total_count / sum(total_count)) %>%
-    filter(freq_by_cluster == max(freq_by_cluster)) 
+  cluster_label <- df %>% dplyr::group_by(cluster, labels) %>% 
+    dplyr::summarise(total_count=dplyr::n(),.groups = "drop_last") %>%
+    dplyr::mutate(freq_by_cluster = total_count / sum(total_count)) %>%
+    dplyr::filter(freq_by_cluster == max(freq_by_cluster)) 
   
   cluster_label <- cluster_label[, -which(names(cluster_label) 
                                           %in% c("total_count","freq_by_cluster"))]
@@ -95,15 +385,9 @@ define_label_cluster <- function(predicted, ground_truth){
   
 }
 
-cluster_predicted_label <- function(model, predicted){
-  for (c in model$cluster_label$cluster){
-    clabel <- filter(model$cluster_label, cluster == c)
-    predicted[predicted==clabel$cluster]<-as.character(clabel$labels)
-    
-  }
-  return(factor(predicted))
-  
-}
+
+
+
 
 define_label_cluster2 <- function(predicted, gt){
   df <- data.frame (labels = gt,
@@ -112,8 +396,8 @@ define_label_cluster2 <- function(predicted, gt){
   
   cluster_label <- df %>% group_by(cluster, labels) %>% 
     summarise(total_count=n(),.groups = "drop_last") %>%
-    mutate(freq_by_cluster = total_count / sum(total_count)) %>%
-    filter(freq_by_cluster == max(freq_by_cluster)) 
+    dplyr::mutate(freq_by_cluster = total_count / sum(total_count)) %>%
+    dplyr::filter(freq_by_cluster == max(freq_by_cluster)) 
   
   return(sapply(df$cluster, 
                 function(s) cluster_label[cluster_label$cluster == s,]$labels))
@@ -122,7 +406,7 @@ define_label_cluster2 <- function(predicted, gt){
 
 accuracy_model <- function(model, gt, samples){
   predict_clust <- dtwclust::predict(model, model$datalist)
-  cluster_labeled <- cluster_predicted_label(model, predict_clust)
+  cluster_labeled <- predict_clabel(model, predict_clust)
   hits <- as.integer(gt == cluster_labeled)
   acc <- sum(hits)/length(hits)
   return(acc)
@@ -134,36 +418,7 @@ accuracy_model2 <- function(model, values){
 }
 
 
-model_by_combination_bands <- function(model, samples, bands, r){
-  
-  combns_hcluster <- list()
-  
-  combinations <- combn(bands,r)
-    
-  for(c in 1:length(combinations[1,])){
-      comb_bands <- combinations[,c]
-      print(comb_bands)
-      values <- sits_values(samples, comb_bands, format = "cases_dates_bands")
-      
-      
-      dendro <- dtwclust::tsclust(
-        series = values,
-        type = "hierarchical",
-        k = max(nrow(values)-1, 3),
-        distance = "dtw_basic",
-        control = dtwclust::hierarchical_control(method = "ward.D2")
-        
-      )
-      dendro$bands <- comb_bands
-      ground_truth <- factor(samples$label)
-      predicted <- dtwclust::predict(dendro, values)
-      dendro$cluster_label <- define_label_cluster(predicted, ground_truth)
-      
-      combns_hcluster <- append(combns_hcluster,list(dendro))
-      
-    }
-    return(combns_hcluster)
-}
+
 
 cluster_by_band <- function(clusters, bands){
   count = 1
@@ -210,7 +465,7 @@ accuracy_analysis <- function(samples, clusters, start_date, end_date, path){
       ts <- sits_values(tsamples, model$bands, format = "cases_dates_bands")
       gt <- factor(tsamples$label)
       predict_clust <- accuracy_model2(model, ts)
-      cluster_labeled <- cluster_predicted_label(model, predict_clust)
+      cluster_labeled <- predict_clabel(model, predict_clust)
       hits <- as.integer(gt == cluster_labeled)
       acc_cluster <- sum(hits)/length(hits)
       bands_cluster <- paste(model$bands, collapse = "/") 
@@ -302,15 +557,7 @@ bynary_classification_metrics <- function(predicted, actual){
   
 }
 
-clustering_metrics <- function(model, ground_truth){
-  suppressMessages(vi_evaluators <- cvi_evaluators("valid", ground.truth = ground_truth))
-  score_fun <- vi_evaluators$score
-  metrics <- score_fun(list(model))
-  metrics = data.frame(metrics)
-  metrics$bands <- paste(model$bands, collapse = "-")
-  return(metrics[,c("bands", "RI", "ARI", "J", "FM", "Sil", "D","CH")])
-  
-}
+
 
 classification_eval <- function(predicted, ground_truth){
   cm <-confusionMatrix(predicted, ground_truth)
@@ -337,7 +584,7 @@ call_classification_metrics <- function(model, ground_truth, samples){
   bands <- model$bands
   values <- sits_values(samples, bands, format = "cases_dates_bands")
   predicted <- dtwclust::predict(model, values)
-  predicted <- cluster_predicted_label(model, predicted)
+  predicted <- predict_clabel(model, predicted)
   cmetrics <- classification_metrics(predicted, ground_truth)
   bands <- paste(model$bands, collapse = "/") 
   cmetrics <- cbind(bands,cmetrics)
@@ -348,33 +595,7 @@ confusion_matrix <- function(predicted, groud_truth){
   return(confusionMatrix(predicted, groud_truth))
 }
 
-classification_metrics <- function(predicted, ground_truth, bands_model){
-  bands <- paste(bands_model, collapse = "-")
-  cm <- confusionMatrix(predicted, ground_truth)
-  if(length(unique(ground_truth)) > 2){
-    ACC <- cm$overall["Accuracy"][[1]]
-    BACC <- mean(cm$byClass[,"Balanced Accuracy"])
-    PREC <- if (is.na(mean(cm$byClass[,"Precision"]))) 0 else mean(cm$byClass[,"Precision"])
-    RECL <- mean(cm$byClass[,"Recall"])
-    SENS <- mean(cm$byClass[,"Sensitivity"])
-    F1 <- if (is.na(mean(cm$byClass[,"F1"]))) 0 else mean(cm$byClass[,"F1"]) 
-    SPEC <- mean(cm$byClass[,"Specificity"])
-    
-    
-  }
-  else{
 
-    ACC <- cm$overall["Accuracy"][[1]]
-    BACC <- cm$byClass["Balanced Accuracy"][[1]]
-    PREC <- cm$byClass["Precision"][[1]]
-    RECL <- cm$byClass["Recall"][[1]]
-    SENS <- cm$byClass["Sensitivity"][[1]]
-    F1 <- cm$byClass["F1"][[1]]
-    SPEC <- cm$byClass["Specificity"][[1]]
-  }
-  metrics <- data.frame(bands,ACC,BACC,PREC,RECL,SENS,F1,SPEC)
-  return(metrics)
-}
 
 
 models_metrics <- function(models, samples){
@@ -438,7 +659,7 @@ prediction_test <- function(samples,
   ts <- sits_values(tsamples, model$bands, format = "cases_dates_bands")
   predicted <- dtwclust::predict(model, ts)
   ground_truth <- factor(tsamples$label)
-  predicted_labeled <- cluster_predicted_label(model, predicted)
+  predicted_labeled <- predict_clabel(model, predicted)
   
   
   samples_save <- tsamples[, -which(names(tsamples) == "time_series")]
@@ -511,20 +732,7 @@ prediction_metrics_by_tile <- function(samples_predicted, start_date, end_date, 
   return(test_acc)
 }
 
-to_qgis <- function(samples_predicted){
- 
-  
-  return(samples_predicted %>% 
-           mutate(
-             label_compare = 
-               case_when(
-                 (cluster_labeled == label)~cluster_labeled,
-                 (cluster_labeled != label)&cluster_labeled=="Forest" ~ "FN",
-                 (cluster_labeled != label)&cluster_labeled=="Deforestation"~"FP"
-                )
-            )
-         )
-}
+
 
 predict_to_sits <- function(model, predicted){
   clabels <- model$cluster_label
@@ -538,8 +746,6 @@ predict_to_sits <- function(model, predicted){
 
   }
   return(pred_sits)
-  
-  
 }
 
 

@@ -1,6 +1,4 @@
-
-
-
+library(ggplot2)
 
 plot_box <- function(dt){
   
@@ -33,12 +31,11 @@ plot_box <- function(dt){
   
 }
 
-plot_corr_classes <- function(corr, patterns, title){
+plot_inter_correlation <- function(inter_correlation){
   Groups <- c("A","A","A","A","A","B","B","B","B","B","C","C","D","D")
-  corr2 <- cbind(corr, Groups)
+  corr2 <- cbind(inter_correlation, Groups)
   gp <- ggplot(corr2, aes(x=Band, y = Correlation, fill=Correlation)) + 
     geom_col() +
-    ggtitle(title) +
     scale_fill_gradient2(low = "blue", high = "red", mid="white") +
     theme(text = element_text(size=12,family="Roboto"),
                   title = element_text(size=12,family="Roboto",hjust = 0.5),
@@ -60,9 +57,9 @@ plot_corr_classes <- function(corr, patterns, title){
   
 }
 
-plot_corr_matrix <- function(corr){
+plot_intra_correlation <- function(intra_correlation){
   
-  gp <- ggplot(data = corr, aes(x=Var1, y=Var2, fill=value)) + 
+  gp <- ggplot(data = intra_correlation, aes(x=Var1, y=Var2, fill=value)) + 
     geom_tile(color = "white",
               lwd = 0.5,
               linetype = 1) + ggplot2::facet_wrap(~label) +
