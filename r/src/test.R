@@ -110,4 +110,3 @@ folds <- caret::createFolds(samples$label, 5, FALSE)
 kfold_model("rf", samples, folds)
 kfold_model("hcdtw", samples, folds)
 
-

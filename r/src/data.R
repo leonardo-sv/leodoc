@@ -84,9 +84,10 @@ download_raster <- function(cube, date_, bands_, tile_, dir) {
   }
   
   file_info_tile <-cube[cube$tile == tile_,]$file_info[[1]]
-  
+  print(bands_)
   for (b in bands_){
-    path <- filter(file_info_tile, date==date_, band==b)$path
+    print(b)
+    path <- dplyr::filter(file_info_tile, date==date_, band==b)$path
     url <- strsplit(path, "l/")[[1]][2] 
     splited_url <- strsplit(url, "/")
     name_file <- tail(splited_url[[1]], n=1)
@@ -96,6 +97,69 @@ download_raster <- function(cube, date_, bands_, tile_, dir) {
     download.file(url, path_file)
   }
 }
+
+apply_water_mask <- function(cube, file_path, output_dir){
+  
+  water_value = 6
+  
+  
+  splited_path <- strsplit(file_path, "/")[[1]]
+  file <- splited_path[length(splited_path)]
+  file_no_extension <- strsplit(file, '[.]')[[1]][1]
+  splited_file <- strsplit(file_no_extension,"_")[[1]]
+  last_date <- splited_file[5]
+  tile <- splited_file[3]
+  dates <- cube$file_info[[1]]$date
+  
+  file_info <- cube[cube$tile == tile,]$file_info[[1]]
+  last_SLC <- dplyr::filter(file_info,
+                            date == last_date,
+                            band=="CLOUD")
+  
+  
+  i <- length(dates)
+  date_used <- last_date
+  
+  while(last_SLC$cloud_cover >= 1.0){
+    
+    if (i == 23) {
+      last_SLC <- dplyr::filter(file_info,
+                                date == last_date,
+                                band=="CLOUD")
+      date_used <- last_date
+      break
+    }
+    
+    last_SLC <- dplyr::filter(file_info,
+                              date == dates[length(dates) - i],
+                              band=="CLOUD")
+    
+    date_used <- dates[length(dates) - i]
+    
+    i <- i + 1
+    
+  }
+  
+  path <- last_SLC$path
+  
+  class_img <- terra::rast(file_path)
+  class_img_values <- terra::values(class_img)
+
+  cloud_img <- terra::rast(path)
+  cloud_img_values <- terra::values(cloud_img)
+
+  class_img_values[cloud_img_values == water_value] <- water_value
+  terra::values(class_img) <- class_img_values
+
+  f <- paste(file_no_extension, "water_mask", sep="_")
+  f<- paste(f, date_used, sep="_")
+  f<- paste(f, "tif", sep=".")
+  f <- paste(output_dir, f, sep="/")
+  
+  terra::writeRaster(class_img, f, overwrite=TRUE)
+
+}
+
 
 filter_outliers <- function(sent_cube, samples){
   

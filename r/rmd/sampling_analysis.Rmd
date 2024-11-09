@@ -1,0 +1,611 @@
+---
+title: "Genralization analysis in deforestation and forest samples in Amazon Forest"
+output: html_notebook
+---
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+# Introduction
+
+The Amazon forest is the largest rainforest in the world, and it has a vital role in the carbon cycle and climate regulation. The majority of the Amazon forest is in Brazil, about 60%. Since the end of 80 decade, the Brazilian government has maintained projects based on remote sensing images to monitor the region. PRODES, launched in 1988, is a project with global respect, and it was responsible for a considerable decrease in the deforestation rate in the 90s and the beginning of the 2000s. However, deforestation has increased over the past 15 years, which concerns the Brazilian government.
+
+Even with the evolution of machine learning methods, the visual analysis of the images is the primary method in PRODES and other monitoring projects. For some reason, the region is covered by clouds almost all year, which can result in noise samples and a low number of images with soil information. Another reason is the variability of the samples observed in the region. The Amazon forest has a distinct response over a year and more; the forest may be different depending on the location, and this can result in multiple patterns. Also, deforestation only occurs occasionally, presenting distinct patterns to samples. So, a machine learning method to produce information can be complex.
+
+Considering the sampling process in machine learning methods, understanding how samples behave spatial and temporal is fundamental to improving the results of machine learning methods. Therefore, this work aims to produce a statistical analysis of samples of deforestation and forest in the Amazon forest to understand how much the patterns are different in the deforest and forest classes. Also, we analyze different samples in space and time to verify how much is possible generalize a clustering method.
+
+# Hypotheses
+
+General
+
+* Can use short time series to improve the generalization of model?
+* Is there a relationship between samples in different region and time?
+* Is it possible generate a generic clustering algorithm considering time and space variation?
+
+Spatial
+
+* Samples in different tile can be classify using an single tile as reference.
+* The patterns are similar in different tiles.
+* Is possible produce a ML model generic as possible to classify different region?
+
+Temporal
+
+* Samples in a specific time step can be used to classify samples in the future
+
+* The seasonal behavior of time series happen in the next years
+
+# Functions used
+
+```{r functions, message=FALSE, results='hide'}
+source("../src/data.R")
+source("../src/stats.R")
+source("../src/plot.R")
+source("../src/ml_models.R")
+```
+
+
+# Region of interest
+
+Study area The selected study area cover three Brazil states: 'Rondonia', 'Amazonas' e 'Mato Grosso'. The major area is in the Rondonia State. Rondonia presented the fourth state with the most areas of deforestation in 2022, with 1480 km2. Also, the state has had the third-largest accumulated deforestation area (66103 km2) since 1988 (PRODES launch year). It makes the region a focus of attention for government authorities concerned with deforestation. Therefore, the region is a hotspot for illegal actions. Below is presented a code showing the study area location.
+
+```{r, results='hide',fig.keep='all' }
+
+federative_units <- sf::st_read("../data/shp/uf_2020/uf_2020.shp")
+roi <- sf::st_read("../data/shp/roi_4326/roi.shp")
+brazilian_amazon <- sf::st_read("../data/shp/brazilian_amazon/brazilian_legal_amazon.shp")
+bdc_grid <- sf::st_read("../data/shp/bdc_sm/bdc_sm_4326.shp")
+
+ggplot2::ggplot() + 
+  ggplot2::geom_sf(data = federative_units) + 
+  ggplot2::geom_sf(data = bdc_grid, alpha=1/10) + 
+  ggplot2::geom_sf(data = brazilian_amazon, fill = "green",alpha = 1/5) +
+  ggplot2::geom_sf(data = roi, fill = "red",alpha = 1/1.5) 
+
+```
+
+**Legend**
+
+* Green - Legal Amazon Forest
+* Red - Study area
+* White - BDC grid
+* Gray - Federative Units
+
+# Data
+
+The samples using a PRODES map to define their geographic location (longitude and latitude) and S2_SEN2COR_10_16D_STK-1 BDC cube provide the time series values. PRODES methodology allows us to define forest samples where it is possible to define a single class sample over two consecutive years safely. Considering deforestation areas, it is impossible to ensure a single class sample over these two years because the land cover can change along the selected period, e.g., pasture. However, it is possible to conclude that there was deforestation at the beginning of the time series period, and the ground truth is not a primary forest in all periods. The samples have 265026 time series: 182146 in forest and 82880 deforested areas. The R code above imports the samples and show the first six samples.
+
+```{r import samples }
+samples <- readRDS("../data/samples/rds/2018-2021/samples.rds")
+head(samples)
+```
+# Statistical Analysis
+
+Statistical analysis is a mathematical procedure to investigate trends, patterns and relationship through quantitative data. The method consists in collect data and summarize it using a descriptive statistics. To draw a valid conclusions using statistical analysis is important develop carefully the sampling procedure, use inferential statistics to test hypotheses, make estimates about the population to finally interpret and generalize your findings.
+
+# General Analysis
+
+The statistic analysis can allow us to understand the temporal and spatial behavior of the samples, showing patterns, trends, relationships, and variability using quantitative data. We will start presenting a summary of the bands' values by class. The data comprises sentinel observations, including twelve bands and two vegetation indexes. The code above summarizes the time series data along the time by class. In this summary, we can visualize basic statistical measurements for each band by class.
+
+* Forest samples
+
+```{r forest stats}
+forest_samples <- samples[samples$label == "Forest",]
+ts <- forest_samples$time_series
+dt <- dt <- data.table::data.table(dplyr::bind_rows(ts))
+summary(dt)
+```
+
+* Deforestation samples
+
+```{r deforestation stats}
+deforested_areas_samples <- samples[samples$label == "Deforested Areas",]
+ts <- deforested_areas_samples$time_series
+dt <- dt <- data.table::data.table(dplyr::bind_rows(ts))
+summary(dt)
+```
+
+To all values, we can observe a distortion between the median/mean and the maximum and maximum value measured for both the deforestation and the forest class. In this summary, the measures consider all values independent of the date, so we do not consider the temporal characteristic of the samples. These distortions can indicate that the observed value can not correspond to the actual land cover value at some point in the period. Some reasons for this can be the presence of clouds, aerosol interference, or pixel saturation. The interquartile range shows slight variation, indicating that most observed values have a singular pattern.
+
+# Variation band
+
+Above is presented a box plot for each band.
+
+```{r box plot samples, fig.width=9,fig.height=5, warning=FALSE}
+plot_box(samples)
+```
+The interquartile variation is generally more significant for the Deforestation class than the Forest class, showing that the forest class presented a more homogeneous behavior. This behavior is expected considering the characteristics of the classes. The Amazon forest presents a massive tree concentration throughout the entire period. Meanwhile, deforestation is a non-homogeneous tree loss that can explain the variation, and the area can be another class, e.g., pasture. Still looking for the interquartile, the band variation is slight to all bands and slightly more significant to indexes. The bands B01 to B05 presented a slight variation considering the two classes. Contrasting Forest against Deforestation class, the band B12 to Forest class also presents a slight variation; meanwhile, the band B12 to Deforestation class presents more variation in comparison. The bands B06 to B11 present more variation in contrast to other bands. The indexes' variation is more considerable, mainly considering the deforestation class. The median for the bands presents less variation to the classes compared to indexes; this shows how these indexes highlight the vegetation. All bands presented many numbers of outliers. To analyze these behaviors, we will explore the temporal characteristics to verify if these observations can be retired or if these outliers represent a natural variation considering clouds, for example.
+
+Now, we are analyzing the behavior of the bands, considering the time variation. To simplify the visualization of the charts, we analyzed the two indexes (NDVI and EVI). Above, we plot two charts of the median and the quartiles. The command above calculated some statistics from the sample data: Mean, Median, Quartil 25%, Quartil 75%, Median, Standard deviation, and Correlation.
+
+```{r calc stats, warning=FALSE}
+stats <- stats_ts(samples)
+```
+
+* NDVI and EVI (Plotting Median and Quartils)
+
+```{r plot stats}
+plot_stats(stats, c("Median", "Q25", "Q75"), c("NDVI", "EVI"))
+```
+
+Analyzing the graphs, we can observe that the forest samples present a behavior with less variation in the median value over time than the deforestation class. The interquartile range for deforestation samples is generally considerably more extensive than for forest samples. In addition, the interquartile distance is more diminutive in periods of drought, indicating that the lower presence of clouds in this period drastically reduces the variability of observed values. The median of the indices for the deforestation samples presents two characteristic peaks in the rainy season and two valleys in the dry season. As for the forest samples, it is also possible to identify these peaks and valleys for the same periods. However, the values have a lower variance, highlighting the more homogeneous behavior for the vegetation indices over time. By contrasting the indices, we can see that in the case of deforestation samples, the general behavior of the median is similar for both indices, with lower values for EVI and higher values for NDVI. As for the forest samples, we can identify an almost opposite behavior for the indices. When the value increases for the EVI, the median value decreases for the NDVI.
+
+# Pattern analysis
+
+In time series analysis, it is helpful to visualize the temporal patterns to understand the band variability over the period. The chart above presents a statistical approximation of the samples in a single plot with all available sentinel bands and two vegetation indexes. The patterns represent an additive model (GAM) to obtain a possible predictor.
+
+The following code presents the function sits_patterns(). It uses the dtwSat R package to generate the patterns used in the plot.
+
+```{r patterns}
+patterns <- sits::sits_patterns(samples)
+plot_patterns(patterns)
+```
+
+The resulting patterns allow us to analyze the behavior of the deforestation and Forest classes over two years of observations. The Forest class has less variation response than deforestation over the years; this shows that it should be possible to generate a reasonable separation between the classes. We can gain some insights into the expected classes by considering the vegetation indexes. The forest response is more homogeneous over the period with high values than the deforestation class, where the responses present high variation. Deforestation is the highest response occurring in the rainy season, with a considerable drop in the dry season. Contrasting the indexes, the deforestation response to NDVI and EVI presents a solid linear positive correlation. For the forest response, there is no strong linear correlation between the indexes.
+
+# Intra-class band Correlation
+
+The previous patterns are sound indicative of the class's behavior. Thus, their Correlation can support the previous analysis. The code below calculates the intra-class band correlation and plots it. Here, we desire to analyze numerically the relationship between the pattern bands of deforestation and Forest classes separately.
+
+```{r inter class correlation, fig.width=9,fig.height=5, warning=FALSE}
+intra_corr <- intra_class_correlation(patterns)
+plot_intra_correlation(intra_corr)
+```
+
+The intra-class Correlation of the band's patterns to forest patterns reveals a high positive correlation to all bands except the NDVI band, which presents a negative correlation to other bands. We can separate four groups with a high positive correlation in the deforestation class: 1 (B01 to B05), 2 (B06 to B09), 3 (B11 to B12), and 4 (NDVI and EVI). Analyze the groups against each other: Group 1 practically has no Correlation to other groups; Group 2 presents a negative correlation to 3 and a positive correlation to 4; Group 3 presents a negative Correlation to 4. The previous analysis covers group 4 correlation against other groups.
+
+# Inter-class band Correlation
+
+The code below calculates the inter-class band correlation and plots it. Here, we want to analyze the band patterns correlation class against class, comparing the respective band of deforestation patterns with forest patterns.
+
+```{r intra class correlation}
+inter_corr <- inter_class_correlation(patterns)
+plot_inter_correlation(inter_corr)
+```
+
+The inter-class Correlation shows a high positive correlation between the band patterns B01, B02, B03, B04, and B05. And a negative correlation to bands B08 and EVI. The other bands practically presented no correlation between the patterns of the respective bands of forest class and deforestation class.
+
+
+# Bands Analysis
+
+The previous intra-class Correlation analysis reveals that some band patterns are highly correlated. Indicating that some patterns have almost the same information, making it redundant to include them in an ML model. Including these highly correlated patterns in a model can lead to a multicollinearity problem. To avoid this problem, we developed a strategy to select features based on correlation analysis (Intra-class and Inter-class analysis). Based on the Intra-class correlation information to each class, we observed four groups with a high positive correlation considering the deforestation class. Through that information, we select the following bands by groups.
+
+* Group 1: Select band B05 because the band presents no correlation to other groups (Intra-class Correlation chart).
+
+* Group 2: Select band B06 and B09 because the band presents the lowest Inter-class Correlation.
+
+* Group 3: Select band B12 because the band presents the lowest Inter-class Correlation.
+
+* Group 4: Select the bands NDVI and EVI. The NDVI negatively correlates to other bands considering the forest class (Intra-class Correlation chart), and the band presents the lowest Intra-class Correlation. The EVI is also an index vegetation that presents a similar behavior in the deforestation class and negatively correlates to NDVI in the forest class.
+
+The analysis generates a list of selected bands (B05, B07, B11, NDVI, and EVI). The subsequent analysis uses this list of bands to verify how a hierarchical clustering method behaves with a distinct combination of the band list. In the other analysis, we use integral time series, all periods, and all sample coordinates. However, here, we select the first year of the period and the samples located on the central tile of the interest region because the subsequent analysis aims to test the generalization of the generated models. The code below generates all possible band list combinations and produces one model by combination using the same hierarchical cluster configuration.
+
+
+
+```{r bands combinations}
+bands <- c("B05", "B06", "B09","B12","NDVI", "EVI")
+bcomb <- all_combinations(bands)
+for(c in bcomb)print(c)
+```
+
+The evaluation of the clustering uses distinct cluster and classification metrics to define the quality of each model. To calculate the classification metrics, we define a label for each cluster based on the majority, where the cluster label will be the class with more members in the cluster. Below is presented the evaluated metrics:
+
+**Clustering indexes**
+
+* RI: Rand Index.
+* ARI: Adjusted Rand Index.
+* J: Jaccard Index.
+* FM: Fowlkes-Mallows
+* VI: Soft Variation of Information
+* Sil: Silhouette index
+* D: Dunn index
+* COP: COP index
+
+**Classification metrics**
+
+* ACC: Accuracy.
+* ACC_F: Accuracy to Forest samples (Not used in voting).
+* ACC_D: Accuracy to Forest samples (Not used in voting)..
+* PREC: Precision.
+* SENS: Sensitivity.
+* SPEC: Specificity.
+* F1: F1-Score.
+
+The training set consists of time series samples subdivided using the cube date
+range (2018-07-28 to 2019-07-12) closest to the PRODES 2018 mapping at tile 
+013015 (the center of region of interest). Bellow is presented the code to split
+the sample data considering these parameters:
+
+
+```{r training data}
+samples_013015 <- samples[samples$tile == "013015",]
+training_samples <-subset_by_date (samples_013015, "2018-07-28","2019-07-12")
+head(training_samples)
+```
+
+The models evaluation uses the k-fold cross validation using 20 percent of the 
+data to test and 80 percent to train for each fold. The next code block generate
+the folds used.
+
+```{r folds}
+set.seed(123)
+folds <- createFolds(training_samples$label, 5, FALSE)
+write.csv(folds,file="../data/folds.csv",row.names=F)
+```
+
+
+The all possible combination of the select bands (B05, B07, B11, NDVI, and EVI) 
+was evaluated using the mean of each evaluated metric for the folds. 
+The all possible combination of the select bands (B05, B07, B11, NDVI, and EVI) 
+was evaluated using the mean of each evaluated metric for the folds. 
+To select the best model based on the configuration bands, a voting schema using
+the clustering and classification metrics. Where each metric contributes with 
+one single vote, the vote of the model depends on how the metric works. In some 
+metrics, the target is to select the maximum between all band combinations by 
+the given values; in others, the objective is to select the minimum value.
+In the minimum case, invert the metric value and select the maximum value 
+measured.  Bellow is presented the result of the k-fold to the evaluated metrics
+for each model tested: Hierarchical clustering using DTW distance and Random 
+Forest.
+
+
+* HC-DTW
+
+```{r hc_dtw}
+
+metrics_hcdtw <- empty_metric_df("unsupervised")
+for(c in bcomb){
+  training_samples_cbands <- sits_select(training_samples, c)
+  metrics_k <- kfold_model("hcdtw", training_samples_cbands, folds)
+  metrics_hcdtw <- rbind(metrics_hcdtw, metrics_k)
+}
+write.table(metrics_hcdtw , file = "../data/metrics_kfold_hcdtw.csv")
+
+```
+
+```{r score_hcdtw}
+best_model_voting(metrics_hcdtw)
+```
+
+
+* RF
+
+```{r rf}
+metrics_rf <- empty_metric_df("supervised")
+for(c in bcomb[52:63]){
+  print(c)
+  training_samples_cbands <- sits_select(training_samples, c)
+  metrics_k <- kfold_model("rf", training_samples_cbands, folds)
+  metrics_rf <- rbind(metrics_rf, metrics_k)
+}
+write.table(metrics_rf , file = "../data/csv/metrics_kfold_rf.csv")
+```
+
+```{r score_rf}
+metrics_rf <- read.csv("../data/csv/metrics_kfold_rf.csv", sep=' ')
+best_model_voting(metrics_rf)
+```
+
+The best rated combination was different to the models. To the HC-DTW the 
+bands combination B09-B12 reach the most votes while to the RF the best rated
+combination was B06-B09-B12-NDVI. Looking to the second most voted combination,
+the B05-B06-B09-NDVI-EVI combination was second best rated combination to both
+methods tested HC-DTW and RF. Therefore, the generalization analysis will use 
+the two best combinations to spatial and temporal validation of the models.
+
+# Generalization analysis
+
+The generalization analysis uses distinct areas and periods, generating a robust
+test set. The spatial validation analysis uses samples at other tiles with the 
+same period. The temporal validation generalization test uses a time series with
+distinct periods, more precisely, the next two years of original samples. At end,
+the spatio-temporal validation vary both time and geographic space.
+
+The spatio-temporal validations analyzes how the best models perform over 
+held-out test set samples. As shown, the original samples are  25 'BDC' tiles 
+and cover the period  2018-07-28 to 2019-07-12. That represents time-series
+samples with 69 time steps or image observations.
+
+* **BDC TILES**
+```{r show tiles }
+unique(samples$tile)
+```
+* **Time Series time steps**
+
+```{r show time steps }
+samples$time_series[[1]]$Index
+```
+
+
+
+The validations tests will analysis models considering the best two rated band
+combinations for the machine learning methods HC-DTW and RF. The training 
+dataset (`training_samples`) used in this stage is the same used to band 
+selection. Where the training data set used to generate the models comprises
+all samples from the center tile (013015) at the 2018-07-28 to 2019-07-12 using
+the respective band combinations. 
+
+
+The test samples to each validation test has 23 time steps with the follow 
+configuration:
+ 
+* Validation
+  * The same samples used to train models (`training_samples`)
+  * Period: 2018-07-28 to 2019-07-12
+  * Tiles: Only 013015
+  
+
+* Spatial Validation
+  * Period: 2018-07-28 to 2019-07-12
+  * Tiles: All tiles except 013015
+  * Example:
+
+  
+* Temporal Validation
+  * 1st Period: 2019-07-28 to 2020-07-11
+  * 2nd Period: 2020-07-27 to 2021-07-12
+  * Tile: Only 013015
+  * Examples:
+
+  
+* Spatiotemporal Validation
+  * 1st Period: 2019-07-28 to 2020-07-11
+  * 2nd Period: 2020-07-27 to 2021-07-12
+  * Tile: All tiles except 013015
+  * Examples:
+
+
+
+## Validation
+
+In the validation, we build the models and evaluate the classification accuracy
+metrics to the samples used in the training stage. Bellow is recovered the 
+samples in the tile 013015 at period 2018-07-28 to 2019-07-12 an it is show an 
+example of the data set. In total we had 9316 time series: 6715 Forest  and 
+2601 Deforested areas samples.
+
+
+
+```{r validation samples}
+samples_013015 <- samples[samples$tile == "013015",]
+training_samples <-subset_by_date (samples_013015, "2018-07-28","2019-07-12")
+ground_truth <- factor(
+                  training_samples$label, 
+                  levels = sort(unique(training_samples$label)))
+plot(training_samples[1,])
+```
+
+### Building the models and validation
+
+#### HC-DTW 
+* Combination bands {B09,B12}
+
+```{r Build hc-dtw B09_B12}
+ts_B09_B12 <- sits_select(training_samples, c("B09", "B12"))
+
+hcdtw_B09_B12 <- hcdtw(ts_B09_B12)
+
+predict_hcdtw_B09_B12 <- models_predict(hcdtw_B09_B12, 
+                                                   ts_B09_B12)
+metrics <- classification_metrics(hcdtw_B09_B12,
+                       predict_hcdtw_B09_B12, 
+                       ground_truth)
+
+saveRDS(hcdtw_B09_B12, "../data/rds/model_hcdtw_B09_B12.rds")
+write.table(metrics , file = "../data/csv/validations/metrics_hcdtw_B09_B12.csv")
+```
+  
+```{r metrics hc-dtw B09_B12}
+read.csv("../data/csv/validations/metrics_hcdtw_B09_B12.csv", sep=' ')
+```
+* Combination bands {B05,B06,B09,NDVI,EVI}
+  
+```{r Build hc-dtw B05_B06_B09_NDVI_EVI}
+ts_B05_B06_B09_NDVI_EVI <- sits_select(training_samples, c("B05",
+                                              "B06",
+                                              "B09",
+                                              "NDVI",
+                                              "EVI"))
+
+hcdtw_B05_B06_B09_NDVI_EVI <- hcdtw(ts_B05_B06_B09_NDVI_EVI)
+
+predict_hcdtw_B05_B06_B09_NDVI_EVI <- models_predict(hcdtw_B05_B06_B09_NDVI_EVI, 
+                                                   ts_B05_B06_B09_NDVI_EVI)
+
+metrics <- classification_metrics(hcdtw_B05_B06_B09_NDVI_EVI,
+                       predict_hcdtw_B05_B06_B09_NDVI_EVI, 
+                       ground_truth)
+
+saveRDS(hcdtw_B05_B06_B09_NDVI_EVI, 
+        "../data/rds/model_hcdtw_B05_B06_B09_NDVI_EVI.rds")
+write.table(metrics, 
+      file = "../data/csv/validations/metrics_hcdtw_B05_B06_B09_NDVI_EVI.csv")
+```
+
+```{r metrics hc-dtw models B05,B06,B09,NDVI,EVI}
+read.csv("../data/csv/validations/metrics_hcdtw_B05_B06_B09_NDVI_EVI.csv",
+         sep=' ')
+```
+
+
+#### RF
+* Combination bands {B06,B09,B12,NDVI}
+
+```{r Build rf B06_B09_B12_NDVI}
+ts_B06_B09_B12_NDVI <-sits_select(training_samples, c("B06","B09","B12","NDVI"))
+
+rf_B06_B09_B12_NDVI <- rf()
+
+rf_B06_B09_B12_NDVI <- sits_train(ts_B06_B09_B12_NDVI, rf_B06_B09_B12_NDVI)
+
+predict_rf_B06_B09_B12_NDVI <- models_predict(rf_B06_B09_B12_NDVI, 
+                                                   ts_B06_B09_B12_NDVI)
+
+metrics <- classification_metrics(rf_B06_B09_B12_NDVI,
+                                  predict_rf_B06_B09_B12_NDVI, 
+                                  ground_truth)
+
+saveRDS(rf_B06_B09_B12_NDVI, "../data/rds/model_rf_B06_B09_B12_NDVI.rds")
+write.table(metrics , 
+            file = "../data/csv/validations/metrics_rf_B06_B09_B12_NDVI.csv")
+```
+    
+```{r metrics rf B06_B09_B12_NDVI}
+read.csv("../data/csv/validations/metrics_rf_B06_B09_B12_NDVI.csv", sep=' ')
+```
+* Combination bands {B05,B06,B09,NDVI,EVI}
+  
+```{r Build rf models B05_B06_B09_NDVI_EVI}
+ts_B05_B06_B09_NDVI_EVI <- sits_select(training_samples, c("B05",
+                                              "B06",
+                                              "B09",
+                                              "NDVI",
+                                              "EVI"))
+
+rf_B05_B06_B09_NDVI_EVI <- rf()
+
+rf_B05_B06_B09_NDVI_EVI <- sits_train(ts_B05_B06_B09_NDVI_EVI,
+                                      rf_B05_B06_B09_NDVI_EVI)
+
+predict_rf_B05_B06_B09_NDVI_EVI <- models_predict(rf_B05_B06_B09_NDVI_EVI, 
+                                                   ts_B05_B06_B09_NDVI_EVI)
+
+metrics <- classification_metrics(rf_B05_B06_B09_NDVI_EVI,
+                       predict_rf_B05_B06_B09_NDVI_EVI, 
+                       ground_truth)
+
+saveRDS(rf_B05_B06_B09_NDVI_EVI, "../data/rds/model_rf_B05_B06_B09_NDVI_EVI.rds")
+write.table(metrics , file = 
+              "../data/csv/validations/metrics_rf_B05_B06_B09_NDVI_EVI.csv")
+```
+      
+```{r metrics rf models B05,B06,B09,NDVI,EVI}
+read.csv("../data/csv/validations/metrics_rf_B05_B06_B09_NDVI_EVI.csv", sep=' ')
+```
+
+
+## Spatial Validation
+
+The spatial validation focus in evaluated the capacity of the models classify
+other areas different of the region of interest. The evaluation consists in 
+calculate accuracy metrics varying the tiles. Note that, the models just trained
+using the tile 013015 as reference, so the test samples not uses images used in 
+training. Bellow we recover time series at the same period (2018-07-28 to                 2019-07-12) of the training samples but in other regions. Also is show an
+example of the time series sample used in the spatial validation.
+
+```{r Spatial validation samples}
+spatial_samples <- samples[samples$tile != "013015",]
+spatial_samples <-subset_by_date (spatial_samples,
+                                       "2018-07-28",
+                                       "2019-07-12")
+
+plot(spatial_samples[1,])
+```
+
+Now we recover the models build before and apply the evaluated metrics.
+
+```{r Spatial validation tests}
+models_path <- "../data/rds"
+predict_path <- "../data/csv/validations/spatial"
+
+metrics <- run_metrics_path_models(models_path, spatial_samples, predict_path)
+
+write.table(metrics , file = 
+              "../data/csv/validations/metrics_spatial_validation.csv")
+print(metrics)
+
+```
+
+
+## Temporal Validation
+
+
+```{r 1st temporal validation samples}
+  temporal_samples <- samples[samples$tile == "013015",]
+  temporal_samples_1st <-subset_by_date (temporal_samples,
+                                         "2019-07-28",
+                                         "2020-07-11")
+  plot(temporal_samples_1st[1,])
+```
+
+```{r temporal validation 1st test}
+models_path <- "../data/rds"
+predict_path <- "../data/csv/validations/temporal/1st"
+
+metrics <- run_metrics_path_models(models_path, 
+                                   temporal_samples_1st,
+                                   predict_path)
+
+write.table(metrics , file = 
+              "../data/csv/validations/metrics_temporal_1stvalidation.csv")
+print(metrics)
+
+```
+
+```{r 2nd temporal validation samples}
+  temporal_samples_2nd <-subset_by_date (temporal_samples,
+                                         "2020-07-27",
+                                         "2021-07-12")
+  plot(temporal_samples_2nd[1,])
+```
+
+```{r temporal validation 2nd test}
+models_path <- "../data/rds"
+predict_path <- "../data/csv/validations/temporal/2nd"
+
+metrics <- run_metrics_path_models(models_path, 
+                                   temporal_samples_2nd,
+                                   predict_path)
+
+write.table(metrics , file = 
+              "../data/csv/validations/metrics_temporal_2ndvalidation.csv")
+print(metrics)
+
+```
+
+## Spatiotemporal Validation
+
+
+
+```{r 1st spatiotemporal validation samples}
+  spatiotemporal_samples <- samples[samples$tile != "013015",]
+  spatiotemporal_samples_1st <-subset_by_date (spatiotemporal_samples,
+                                         "2019-07-28",
+                                         "2020-07-11")
+  
+  plot(spatiotemporal_samples_1st[1,])
+```
+
+```{r spatiotemporal validation 1st test}
+models_path <- "../data/rds"
+predict_path <- "../data/csv/validations/spatiotemporal/1st"
+metrics <- run_metrics_path_models(models_path, 
+                                   spatiotemporal_samples_1st,
+                                   predict_path)
+
+write.table(metrics , file = 
+            "../data/csv/validations/metrics_spatiotemporal_1stvalidation.csv")
+print(metrics)
+
+```
+
+```{r 2nd spatiotemporal validation samples}
+  spatiotemporal_samples_2nd <-subset_by_date (spatiotemporal_samples,
+                                         "2020-07-27",
+                                         "2021-07-12")
+  plot(spatiotemporal_samples_2nd[1,])
+```
+
+```{r spatiotemporal validation 2nd test}
+models_path <- "../data/rds"
+predict_path <- "../data/csv/validations/spatiotemporal/2nd"
+
+metrics <- run_metrics_path_models(models_path, 
+                                   spatiotemporal_samples_2nd,
+                                   predict_path)
+
+write.table(metrics , file = 
+            "../data/csv/validations/metrics_spatiotemporal_2ndvalidation.csv")
+print(metrics)
+
+```
+
